@@ -1,0 +1,10 @@
+[package]
+name = "headful"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.40.0", features = ["macros", "rt-multi-thread"] }
+chromiumoxide = { git = "https://github.com/alexkehayias/chromiumoxide.git", features = ["tokio-runtime"] }
+futures-util = "0.3"
+htmd = "0.3.2"
