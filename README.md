@@ -40,6 +40,12 @@ cargo run -- https://example.com
 ./target/release/headful https://example.com
 ```
 
+Use an LLM to cleanup the content (good for news sites).
+
+```bash
+cargo run --features llm -- https://example.com --llm-endpoint https://api.openai.com/v1/chat/completions --api-key mykey
+```
+
 The converted Markdown content will be printed to stdout.
 
 ## How It Works
@@ -49,7 +55,8 @@ The converted Markdown content will be printed to stdout.
 3. **Content Extraction**: Retrieves the complete HTML content of the page
 4. **HTML Filtering**: Removes unwanted elements (scripts, styles, etc.)
 5. **Markdown Conversion**: Converts the filtered HTML to Markdown using htmd
-6. **Output**: Prints the resulting Markdown to stdout
+6. **[Optional] LLM Cleanup**: Clean up the markdown using a language model
+7. **Output**: Prints the resulting Markdown to stdout
 
 ## Skipped HTML Elements
 

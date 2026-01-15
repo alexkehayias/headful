@@ -1,10 +1,15 @@
-use std::env;
 use std::io;
 use std::io::Write;
 use futures_util::StreamExt;
 use tokio::task;
 use htmd::HtmlToMarkdown;
 use chromiumoxide::browser::{Browser, BrowserConfig};
+use clap::Parser;
+
+#[cfg(feature = "llm")]
+use reqwest::Client;
+#[cfg(feature = "llm")]
+use serde::{Deserialize, Serialize};
 
 
 fn wait_for_enter(prompt: &str) -> io::Result<()> {
@@ -15,10 +20,107 @@ fn wait_for_enter(prompt: &str) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "llm")]
+#[derive(Serialize)]
+struct OpenAIRequest {
+    model: String,
+    messages: Vec<Message>,
+}
+
+#[cfg(feature = "llm")]
+#[derive(Serialize)]
+struct Message {
+    role: String,
+    content: String,
+}
+
+#[cfg(feature = "llm")]
+#[derive(Deserialize)]
+struct OpenAIResponse {
+    choices: Vec<Choice>,
+}
+
+#[cfg(feature = "llm")]
+#[derive(Deserialize)]
+struct Choice {
+    message: MessageContent,
+}
+
+#[cfg(feature = "llm")]
+#[derive(Deserialize)]
+struct MessageContent {
+    content: String,
+}
+
+#[cfg(feature = "llm")]
+async fn cleanup_with_llm(
+    markdown: &str,
+    endpoint: &str,
+    api_key: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let client = Client::new();
+    let mut request_builder = client.post(endpoint)
+        .header("Content-Type", "application/json");
+
+    if let Some(key) = api_key {
+        request_builder = request_builder.header("Authorization", format!("Bearer {}", key));
+    }
+
+    let openai_request = OpenAIRequest {
+        model: "openai/gpt-oss-120b".to_string(),
+        messages: vec![
+            Message {
+                role: "system".to_string(),
+                content: "You are a helpful assistant that cleans up and formats markdown content extracted from web pages. Remove any extraneous whitespace, fix broken links if possible, and ensure proper markdown formatting. Return only the cleaned markdown without any additional commentary.".to_string(),
+            },
+            Message {
+                role: "user".to_string(),
+                content: format!("Clean up this markdown that was converted from a website HTML, removing navigation and extraneous content:\n\n{}", markdown),
+            },
+        ],
+    };
+
+    let response = request_builder
+        .json(&openai_request)
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response.text().await?;
+        return Err(format!("LLM API request failed with status {}: {}", status, error_text).into());
+    }
+
+    let openai_response: OpenAIResponse = response.json().await?;
+    Ok(openai_response.choices
+        .first()
+        .ok_or("No choices in LLM response")?
+        .message
+        .content
+        .clone())
+}
+
+/// Convert HTML web pages to Markdown format using a headful Chrome browser.
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+struct Cli {
+    /// The URL to fetch and convert to Markdown
+    url: String,
+
+    #[cfg(feature = "llm")]
+    /// LLM API endpoint for markdown cleanup
+    #[arg(short, long)]
+    llm_endpoint: Option<String>,
+
+    #[cfg(feature = "llm")]
+    /// LLM API key
+    #[arg(short, long)]
+    api_key: Option<String>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().skip(1).collect();
-    let url = args.first().expect("Missing URL to fetch");
+    let cli = Cli::parse();
 
     // Create a headful chromium browser and the handler to drive the
     // browser via websocket
@@ -33,8 +135,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Fetch the page
-    let page = browser.new_page(url).await?;
+    let page = browser.new_page(&cli.url).await?;
     let html = page.wait_for_navigation().await?.content().await?;
+
+    // Clean up
+    browser.close().await?;
+    let _ = handle.await;
 
     // Convert HTML to markdown
     let converter = HtmlToMarkdown::builder()
@@ -51,9 +157,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         markdown_content = converter.convert(&html_after_captcha)?;
     }
 
-    // Clean up
-    browser.close().await?;
-    let _ = handle.await;
+    // Clean up with LLM if feature is enabled
+    #[cfg(feature = "llm")]
+    {
+        let endpoint = cli.llm_endpoint.ok_or("Missing LLM endpoint (use --llm-endpoint)".to_string())?;
+        let api_key = cli.api_key.as_deref();
+
+        markdown_content = cleanup_with_llm(&markdown_content, &endpoint, api_key).await?;
+    }
 
     println!("{}", markdown_content);
     Ok(())
