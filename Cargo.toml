@@ -9,9 +9,9 @@ llm = ["dep:reqwest", "dep:serde", "dep:serde_json"]
 
 [dependencies]
 tokio = { version = "1.40.0", features = ["macros", "rt-multi-thread"] }
-chromiumoxide = { git = "https://github.com/alexkehayias/chromiumoxide.git", features = ["tokio-runtime"] }
+chromiumoxide = "0.8"
 futures-util = "0.3"
-htmd = "0.3.2"
+htmd = "0.5"
 clap = { version = "4.5", features = ["derive"] }
 
 # Optional dependencies for LLM cleanup feature
