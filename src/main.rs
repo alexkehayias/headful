@@ -56,15 +56,12 @@ struct MessageContent {
 async fn cleanup_with_llm(
     markdown: &str,
     endpoint: &str,
-    api_key: Option<&str>,
+    api_key: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let client = Client::new();
-    let mut request_builder = client.post(endpoint)
-        .header("Content-Type", "application/json");
-
-    if let Some(key) = api_key {
-        request_builder = request_builder.header("Authorization", format!("Bearer {}", key));
-    }
+    let request_builder = client.post(endpoint)
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", api_key));
 
     let openai_request = OpenAIRequest {
         model: "openai/gpt-oss-120b".to_string(),
@@ -103,6 +100,7 @@ async fn cleanup_with_llm(
 /// Convert HTML web pages to Markdown format using a headful Chrome browser.
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
+#[command(arg_required_else_help = true)]
 struct Cli {
     /// The URL to fetch and convert to Markdown
     url: String,
@@ -110,12 +108,12 @@ struct Cli {
     #[cfg(feature = "llm")]
     /// LLM API endpoint for markdown cleanup
     #[arg(short, long)]
-    llm_endpoint: Option<String>,
+    llm_endpoint: String,
 
     #[cfg(feature = "llm")]
     /// LLM API key
     #[arg(short, long)]
-    api_key: Option<String>,
+    api_key: String,
 }
 
 #[tokio::main]
@@ -160,10 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Clean up with LLM if feature is enabled
     #[cfg(feature = "llm")]
     {
-        let endpoint = cli.llm_endpoint.ok_or("Missing LLM endpoint (use --llm-endpoint)".to_string())?;
-        let api_key = cli.api_key.as_deref();
-
-        markdown_content = cleanup_with_llm(&markdown_content, &endpoint, api_key).await?;
+        markdown_content = cleanup_with_llm(&markdown_content, &cli.llm_endpoint, &cli.api_key).await?;
     }
 
     println!("{}", markdown_content);
