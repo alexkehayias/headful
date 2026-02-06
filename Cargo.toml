@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 default = []
-llm = ["dep:reqwest", "dep:serde", "dep:serde_json"]
+llm = ["dep:reqwest"]
 
 [dependencies]
 tokio = { version = "1.40.0", features = ["macros", "rt-multi-thread"] }
@@ -13,8 +13,8 @@ chromiumoxide = "0.8"
 futures-util = "0.3"
 htmd = "0.5"
 clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"]}
+serde_json = { version = "1.0"}
 
 # Optional dependencies for LLM cleanup feature
 reqwest = { version = "0.12", features = ["json"], optional = true }
-serde = { version = "1.0", features = ["derive"], optional = true }
-serde_json = { version = "1.0", optional = true }

@@ -1,10 +1,28 @@
 use std::io;
 use std::io::Write;
 use futures_util::StreamExt;
+use serde::{Serialize, Deserialize};
+use serde_json::Value;
 use tokio::task;
 use htmd::HtmlToMarkdown;
-use chromiumoxide::browser::{Browser, BrowserConfig};
+use chromiumoxide::{Command, Method, browser::{Browser, BrowserConfig}};
 use clap::Parser;
+
+mod axtree;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetFullAxTree;
+
+impl Command for GetFullAxTree {
+    type Response = Value;
+}
+
+impl Method for GetFullAxTree {
+    fn identifier(&self) -> chromiumoxide::types::MethodId {
+        chromiumoxide::types::MethodId::Borrowed("Accessibility.getFullAXTree")
+    }
+}
+
 
 #[cfg(feature = "llm")]
 use reqwest::Client;
@@ -105,6 +123,11 @@ struct Cli {
     /// The URL to fetch and convert to Markdown
     url: String,
 
+    /// Experimental: Use accessibility tree instead of HTML for
+    /// markdown conversion
+    #[arg(short, long)]
+    axtree: bool,
+
     #[cfg(feature = "llm")]
     /// LLM API endpoint for markdown cleanup
     #[arg(short, long)]
@@ -135,25 +158,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Fetch the page
     let page = browser.new_page(&cli.url).await?;
     let html = page.wait_for_navigation().await?.content().await?;
+    let axt_value = page.execute(GetFullAxTree).await?;
 
     // Clean up
     browser.close().await?;
     let _ = handle.await;
 
-    // Convert HTML to markdown
-    let converter = HtmlToMarkdown::builder()
-        .skip_tags(vec!["script", "style", "footer", "img", "svg", "iframe", "head", "link"])
-        .build();
-    let mut markdown_content = converter.convert(&html)?;
+    // Convert to markdown using accessibility tree or HTML
+    let markdown_content = if cli.axtree {
+        // Parse the accessibility tree from JSON value
+        let axt_json = serde_json::to_string(&axt_value.result)?;
+        let axt: axtree::AxTree = serde_json::from_str(&axt_json)?;
+        eprintln!("Converted accessibility tree with {} nodes", axt.nodes.len());
+        axtree::axtree_to_markdown(&axt)
+    } else {
+        // Convert HTML to markdown
+        let converter = HtmlToMarkdown::builder()
+            .skip_tags(vec!["script", "style", "footer", "img", "svg", "iframe", "head", "link"])
+            .build();
+        let markdown = converter.convert(&html)?;
 
-    // Naive captcha detection and wait for the user to indicate they
-    // completed it
-    if markdown_content.contains("CAPTCHA") {
-        // This is blocking!
-        wait_for_enter("Please complete the CAPTCHA and press return to continue")?;
-        let html_after_captcha = page.wait_for_navigation().await?.content().await?;
-        markdown_content = converter.convert(&html_after_captcha)?;
-    }
+        // Naive captcha detection and wait for the user to indicate they
+        // completed it (only for HTML conversion)
+        let markdown = if markdown.contains("CAPTCHA") {
+            // This is blocking!
+            wait_for_enter("Please complete the CAPTCHA and press return to continue")?;
+            let html_after_captcha = page.wait_for_navigation().await?.content().await?;
+            converter.convert(&html_after_captcha)?
+        } else {
+            markdown
+        };
+
+        markdown
+    };
 
     // Clean up with LLM if feature is enabled
     #[cfg(feature = "llm")]
