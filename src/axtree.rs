@@ -66,6 +66,7 @@ pub struct IgnoredReason {
 pub struct ValueBool {
     #[serde(rename = "type")]
     pub value_type: String,
+    #[serde(default)]
     pub value: bool,
 }
 
@@ -126,9 +127,22 @@ impl Serialize for PropertyValue {
         map.serialize_entry("type", &self.value_type)?;
         match &self.value {
             PropertyValueContent::Boolean(b) => map.serialize_entry("value", b)?,
+            PropertyValueContent::SimpleBoolean(b) => map.serialize_entry("value", b)?,
             PropertyValueContent::String(s) => map.serialize_entry("value", s)?,
             PropertyValueContent::Integer(i) => map.serialize_entry("value", i)?,
             PropertyValueContent::Token(t) => map.serialize_entry("value", t)?,
+            PropertyValueContent::NodeList(nodes) => map.serialize_entry("value", nodes)?,
+            PropertyValueContent::TokenList(tokens) => map.serialize_entry("value", tokens)?,
+            PropertyValueContent::Unknown(v) => {
+                // Serialize the full unknown value (which may contain "value" field)
+                if let serde_json::Value::Object(obj) = v {
+                    for (key, val) in obj {
+                        map.serialize_entry(&key, &val)?;
+                    }
+                } else {
+                    map.serialize_entry("value", v)?;
+                }
+            }
         }
         map.end()
     }
@@ -162,10 +176,22 @@ impl<'de> Deserialize<'de> for PropertyValue {
                             Err(_) => return Err(serde::de::Error::custom("invalid boolean value")),
                         }
                     } else {
-                        return Err(serde::de::Error::custom("missing value field"));
+                        // Handle missing value field gracefully
+                        PropertyValueContent::Boolean(BooleanOrUndefined { value_type: "booleanOrUndefined".to_string(), value: false })
                     }
                 } else {
                     return Err(serde::de::Error::custom("invalid boolean object"));
+                }
+            }
+            "boolean" => {
+                if let Some(v) = raw.rest.get("value") {
+                    match serde_json::from_value::<bool>(v.clone()) {
+                        Ok(b) => PropertyValueContent::SimpleBoolean(b),
+                        Err(_) => return Err(serde::de::Error::custom("invalid boolean value")),
+                    }
+                } else {
+                    // Handle missing value field gracefully
+                    PropertyValueContent::SimpleBoolean(false)
                 }
             }
             "string" => {
@@ -175,7 +201,8 @@ impl<'de> Deserialize<'de> for PropertyValue {
                         Err(_) => return Err(serde::de::Error::custom("invalid string value")),
                     }
                 } else {
-                    return Err(serde::de::Error::custom("missing value field"));
+                    // Handle missing value field gracefully
+                    PropertyValueContent::String(String::new())
                 }
             }
             "integer" => {
@@ -185,7 +212,8 @@ impl<'de> Deserialize<'de> for PropertyValue {
                         Err(_) => return Err(serde::de::Error::custom("invalid integer value")),
                     }
                 } else {
-                    return Err(serde::de::Error::custom("missing value field"));
+                    // Handle missing value field gracefully
+                    PropertyValueContent::Integer(0)
                 }
             }
             "token" => {
@@ -195,10 +223,62 @@ impl<'de> Deserialize<'de> for PropertyValue {
                         Err(_) => return Err(serde::de::Error::custom("invalid token value")),
                     }
                 } else {
-                    return Err(serde::de::Error::custom("missing value field"));
+                    // Handle missing value field gracefully
+                    PropertyValueContent::Token(String::new())
                 }
             }
-            _ => return Err(serde::de::Error::custom(format!("unknown type: {}", raw.value_type))),
+            "nodeList" => {
+                if let Some(v) = raw.rest.get("value") {
+                    match serde_json::from_value::<Vec<String>>(v.clone()) {
+                        Ok(nodes) => PropertyValueContent::NodeList(nodes),
+                        Err(_) => return Err(serde::de::Error::custom("invalid node list value")),
+                    }
+                } else {
+                    // Handle missing value field gracefully
+                    PropertyValueContent::NodeList(Vec::new())
+                }
+            }
+            "tokenList" => {
+                if let Some(v) = raw.rest.get("value") {
+                    // Try parsing as Vec<String> first
+                    if let Ok(tokens) = serde_json::from_value::<Vec<String>>(v.clone()) {
+                        PropertyValueContent::TokenList(tokens)
+                    } else if let Ok(nodes) = serde_json::from_value::<Vec<AxNode>>(v.clone()) {
+                        // If it's a list of AxNodes, extract node IDs
+                        let ids: Vec<String> = nodes.iter().map(|n| n.node_id.clone()).collect();
+                        PropertyValueContent::TokenList(ids)
+                    } else {
+                        // Try to handle any JSON array - try extracting strings
+                        match v {
+                            serde_json::Value::Array(arr) => {
+                                let tokens: Vec<String> = arr.iter()
+                                    .map(|item| match item {
+                                        serde_json::Value::String(s) => s.clone(),
+                                        serde_json::Value::Object(obj) => {
+                                            // Try to get a value field or serialize the whole object
+                                            obj.get("value")
+                                                .and_then(|val| val.as_str())
+                                                .map(String::from)
+                                                .unwrap_or_else(|| serde_json::to_string(item).unwrap_or_default())
+                                        }
+                                        _ => serde_json::to_string(item).unwrap_or_default(),
+                                    })
+                                    .collect();
+                                PropertyValueContent::TokenList(tokens)
+                            }
+                            _ => {
+                                // Not an array - serialize to string and return as a single-item token list
+                                let str_val = serde_json::to_string(&v).unwrap_or_default();
+                                PropertyValueContent::TokenList(vec![str_val])
+                            }
+                        }
+                    }
+                } else {
+                    // Handle missing value field gracefully
+                    PropertyValueContent::TokenList(Vec::new())
+                }
+            }
+            _ => PropertyValueContent::Unknown(raw.rest),
         };
 
         Ok(PropertyValue {
@@ -209,12 +289,34 @@ impl<'de> Deserialize<'de> for PropertyValue {
 }
 
 /// Content of the property value - handles both wrapped objects and direct values
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub enum PropertyValueContent {
     Boolean(BooleanOrUndefined),
+    SimpleBoolean(bool),
     String(String),
     Integer(i64),
     Token(String),
+    NodeList(Vec<String>),
+    TokenList(Vec<String>),
+    Unknown(serde_json::Value),
+}
+
+impl Serialize for PropertyValueContent {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            PropertyValueContent::Boolean(b) => b.serialize(serializer),
+            PropertyValueContent::SimpleBoolean(b) => b.serialize(serializer),
+            PropertyValueContent::String(s) => s.serialize(serializer),
+            PropertyValueContent::Integer(i) => i.serialize(serializer),
+            PropertyValueContent::Token(t) => t.serialize(serializer),
+            PropertyValueContent::NodeList(nodes) => nodes.serialize(serializer),
+            PropertyValueContent::TokenList(tokens) => tokens.serialize(serializer),
+            PropertyValueContent::Unknown(v) => v.serialize(serializer),
+        }
+    }
 }
 
 /// Boolean or undefined value
